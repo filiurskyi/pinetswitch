@@ -1,10 +1,11 @@
 # pinetswitch
 
-Network policy for a Raspberry Pi 5: decides which link the Pi should use
-(USB-C gadget, Ethernet, Wi-Fi client, Wi-Fi access point) and tells
-NetworkManager to do it.
+Network and power policy for a Raspberry Pi 5: decides which link the Pi
+should use (USB-C gadget, Ethernet, iPhone USB tethering, Wi-Fi client, Wi-Fi
+access point) and which power profile to run, and tells NetworkManager and
+cpufreq to do it.
 
-Status: **design draft** — use cases and the state machine are being refined
+Status: **design draft**: use cases and the state machine are being refined
 here before any logic is written.
 
 ## Principles
@@ -12,78 +13,114 @@ here before any logic is written.
 - **NetworkManager does the networking.** pinetswitch only observes state and
   issues `nmcli` commands (up/down a profile, radio on/off, rescan). It never
   creates or deletes profiles.
+- **pinetswitch is the only one that joins Wi-Fi.** All Wi-Fi profiles have
+  `autoconnect=no`; other known networks are never joined automatically.
+  Ethernet and USB-C keep NetworkManager's normal autoconnect.
 - **Never cut the management path.** Ethernet and USB-C are never brought down
   by a rule.
 - **Rules are ordered and independent.** Each rule looks at one state snapshot
-  and either returns an action or passes. First match wins.
+  and either returns actions or passes. First match wins.
 - **Dry-run first.** `--dry-run` logs decisions without acting.
+
+## Use cases
+
+| # | Situation | Network | Power |
+|---|---|---|---|
+| 1 | **Home, Ethernet** | Wi-Fi radio off. If Ethernet drops: radio on and join `Loading` immediately | full |
+| 2 | **Home, Wi-Fi** | On `Loading`. When Ethernet comes up (and is home): Wi-Fi off, i.e. case 1 | full |
+| 3 | **On the go, USB-C** (power + LAN from laptop/tablet) | `usb0` gadget, reachable as `rpi.local`. Wi-Fi left alone (joined manually) | low |
+| 4 | **On the go, iPhone USB tethering** (iPhone on USB-A) | Internet via iPhone; start AP `Loading Berry` and share it | low |
+| 5a | **On the go, Wi-Fi search 0–5 s** | Look for `Loading` only (are we home?) | — |
+| 5b | **On the go, Wi-Fi search 5–15 s** | Look for `iPhone 12 Pro Max` hotspot, join it (internet via LTE) | ? |
+| 5c | **On the go, nothing found at 15 s** (wall power or powerbank) | Start AP `Loading Berry` | low |
+
+Precedence (first match wins): **3 USB-C → 4 tethering → 1 home Ethernet →
+2 home Wi-Fi → 5 search**.
+
+## States
+
+```
+                     usb0 host attached
+   (any) ------------------------------------------------> USB_HOST     wlan untouched, low power
+                     iPhone USB tether up
+   (any) ------------------------------------------------> TETHER_AP    AP shares tether, low power
+                     eth0 up + home
+   (any) ------------------------------------------------> HOME_WIRED   radio off, full power
+
+   none of the above:
+   SEARCH_HOME (0-5 s) --Loading--> HOME_WIFI (full power)
+        |
+        v 5 s
+   SEARCH_PHONE (5-15 s) --iPhone--> PHONE_WIFI (power ?)
+        |
+        v 15 s
+   AP (Loading Berry, low power) --rescan finds Loading/iPhone?--> HOME_WIFI / PHONE_WIFI
+```
+
+Leaving `HOME_WIRED` (cable pulled) goes straight to `SEARCH_HOME` with the
+radio switched back on.
+
+## Power profiles
+
+| Profile | Default | Mechanism (runtime, no reboot) |
+|---|---|---|
+| full | CPU up to 2.4 GHz, `ondemand` | cpufreq `scaling_max_freq` / governor |
+| low | target ~8-12 W: CPU capped (1.5 GHz, the lowest cpufreq step), `powersave` | same, configurable |
+
+Note: an idle Pi 5 draws ~3 W and ~8-10 W under full CPU load, so "low" mostly
+limits the peaks. Cap values stay in config so they can be tuned after
+measuring. Power source is visible as the USB-PD current limit
+(`/proc/device-tree/chosen/power/max_current`: 5000 on the official 27 W
+supply, usually 3000 or less on laptops and powerbanks), but wall vs powerbank
+cannot be told apart reliably, so the policy keys on the link, not the supply.
 
 ## Inputs (state snapshot)
 
 | Signal | Source |
 |---|---|
-| USB-C gadget link up (host attached) | `usb0` carrier |
+| USB-C host attached | `usb0` carrier / NM device state |
 | Ethernet link up | `eth0` carrier / NM device state |
-| Ethernet is home | TBD (gateway MAC? subnet?) |
+| Ethernet is home | TBD (home router MAC via ARP?) |
+| iPhone tether up | `ipheth` interface present and connected (needs `usbmuxd`) |
 | Wi-Fi radio on/off | `nmcli radio wifi` |
 | Wi-Fi mode: off / client / AP | active NM connection on `wlan0` |
 | Connected SSID | active NM connection on `wlan0` |
 | Visible SSIDs | `nmcli dev wifi list` |
-| AP clients connected | TBD (`iw dev wlan0 station dump`) |
+| AP clients connected | `iw dev wlan0 station dump` |
 | Time in current state | internal timer |
 
 ## Actions
 
-| Action | nmcli |
+| Action | Command |
 |---|---|
-| Connect to known Wi-Fi | `nmcli con up <profile>` |
+| Join Wi-Fi | `nmcli con up <profile>` |
 | Start AP | `nmcli con up "Loading Berry"` |
-| Stop AP / disconnect Wi-Fi | `nmcli dev disconnect wlan0` |
+| Stop AP / leave Wi-Fi | `nmcli dev disconnect wlan0` |
 | Wi-Fi radio off / on | `nmcli radio wifi off/on` |
 | Rescan | `nmcli dev wifi rescan` |
-
-## Use cases (draft)
-
-| # | Situation | Wanted behaviour |
-|---|---|---|
-| 1 | LAN on USB-C | Reachable as `rpi.local` over USB-C; Wi-Fi stays a client to any known network |
-| 2 | LAN on Ethernet, at home (`Loading`) | Wi-Fi off |
-| 3 | No LAN, `Loading` visible | Connect to `Loading` immediately |
-| 4 | No LAN, no known network for 15 s | Start AP `Loading Berry` (WPA2, password in config) |
-| … | *more to be added* | |
-
-## States (draft)
-
-```
-          +--------------+
-          |    BOOT      |
-          +------+-------+
-                 v
-  +------------------------------+
-  |  WIFI_CLIENT_SEARCHING       |---- known SSID found ---> WIFI_CLIENT
-  +------------------------------+
-        | 15 s, nothing                       ^
-        v                                     | periodic rescan finds known SSID
-  +--------------+                            |
-  |   AP         |----------------------------+
-  +--------------+
-
-  WIRED_HOME  (eth0 at home) : Wi-Fi radio off; leaving it -> WIFI_CLIENT_SEARCHING
-  USB_HOST    (usb0 up)      : Wi-Fi client only, never AP
-```
+| Power profile | write `/sys/devices/system/cpu/cpufreq/policy0/scaling_{max_freq,governor}` |
 
 ## Open questions
 
-- How is "Ethernet is home" detected once Wi-Fi is off (can't see `Loading`)?
-- Ethernet but *not* home: Wi-Fi client, off, or AP?
-- USB-C + no known Wi-Fi: stay disconnected, or AP?
-- While AP is up: how often to drop it and rescan; skip while clients are connected?
-- Precedence when USB-C and Ethernet are both up.
+- How is "Ethernet is home" detected once Wi-Fi is off? Proposal: home router MAC.
+- Ethernet but *not* home: Wi-Fi client search, off, or AP?
+- Power profile on the iPhone Wi-Fi hotspot (5b): full or low?
+- While AP is up (5c): how often to drop it and rescan for `Loading` / iPhone; skip while clients are connected?
+- iPhone hotspot internet for all travel devices: to be researched.
+- USB-C and Ethernet both up: USB-C wins (low power) as drafted?
+
+## Power mode tray widget
+
+Feasible: the panel (`wf-panel-pi`) has a system tray plugin (`libtray.so`,
+StatusNotifierItem), so a small Python app using
+`gir1.2-ayatanaappindicator3-0.1` can show an icon with a menu: *Auto
+(policy) / Full / Low*. A manual choice overrides the policy until set back to
+Auto.
 
 ## Layout
 
 ```
-pinetswitch.py        # state snapshot -> ordered rules -> nmcli actions
+pinetswitch.py        # state snapshot -> ordered rules -> nmcli / cpufreq actions
 pinetswitch.service   # systemd unit
 ```
 
