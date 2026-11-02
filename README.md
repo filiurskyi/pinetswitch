@@ -31,11 +31,15 @@ here before any logic is written.
 | 3 | **On the go, USB-C** (power + LAN from laptop/tablet) | `usb0` gadget, reachable as `rpi.local`. Wi-Fi left alone (joined manually) | low |
 | 4 | **On the go, iPhone USB tethering** (iPhone on USB-A) | Internet via iPhone; start AP `Loading Berry` and share it | low |
 | 5a | **On the go, Wi-Fi search 0–5 s** | Look for `Loading` only (are we home?) | — |
-| 5b | **On the go, Wi-Fi search 5–15 s** | Look for `iPhone 12 Pro Max` hotspot, join it (internet via LTE) | ? |
-| 5c | **On the go, nothing found at 15 s** (wall power or powerbank) | Start AP `Loading Berry` | low |
+| 5b | **On the go, Wi-Fi search 5–15 s** | Look for `iPhone 12 Pro Max` hotspot, join it (internet via LTE) | low |
+| 5c | **On the go, nothing found at 15 s** (wall power or powerbank) | Start AP `Loading Berry`; every 3 min drop it ~10 s to rescan for `Loading` / iPhone, skipped while clients are connected | low |
+| 6 | **Ethernet, not home** | Wi-Fi follows the search (5a–5c) | full |
 
 Precedence (first match wins): **3 USB-C → 4 tethering → 1 home Ethernet →
-2 home Wi-Fi → 5 search**.
+2 home Wi-Fi → 6 foreign Ethernet → 5 search**. USB-C wins over Ethernet.
+
+**VPN applies on top of every case**: whenever the Pi's internet uplink is not
+home, the WireGuard tunnel is up and enforced (see below).
 
 ## States
 
@@ -98,16 +102,44 @@ cannot be told apart reliably, so the policy keys on the link, not the supply.
 | Stop AP / leave Wi-Fi | `nmcli dev disconnect wlan0` |
 | Wi-Fi radio off / on | `nmcli radio wifi off/on` |
 | Rescan | `nmcli dev wifi rescan` |
+| VPN up / down | `nmcli con up/down rpi5` |
+| Kill switch on / off | `nft` table `inet pinetswitch` |
 | Power profile | write `/sys/devices/system/cpu/cpufreq/policy0/scaling_{max_freq,governor}` |
+
+## Home detection
+
+- **Ethernet**: the default gateway's MAC on `eth0` matches the home router MAC
+  from config (works with Wi-Fi off).
+- **Wi-Fi**: connected to the `Loading` profile (WPA2-PSK, so a look-alike SSID
+  without the password cannot pass).
+
+## VPN (WireGuard)
+
+- NM profile `rpi5` (imported from `rpi5.conf`, `autoconnect=no`): full tunnel
+  (`0.0.0.0/0`) to the home router (`kn3d148.glddns.com:64894`), address
+  `10.1.0.5`, DNS `10.1.0.1`. NM installs policy routing (fwmark table +
+  `suppress_prefixlength 0`), so local subnets (LAN, iPhone hotspot, `usb0`,
+  AP) stay reachable directly: SSH/VNC to the Pi keep working.
+- **Auto**: pinetswitch brings `rpi5` up when the uplink is not home and down
+  when it is home (the endpoint *is* the home router).
+- **Enforced (kill switch)**: while not home, an nftables table owned by
+  pinetswitch drops traffic leaving through the uplink unless it goes through
+  the tunnel. Allowed outside the tunnel: WireGuard to the endpoint, DHCP, DNS
+  to the uplink gateway (to resolve the endpoint), and local subnets. Traffic
+  forwarded from AP / `usb0` clients is covered too: it leaves through the
+  tunnel or not at all.
+- Tunnel down on a foreign network = no internet, by design.
+
+## Decisions
+
+- Ethernet is home: gateway MAC check. Ethernet not home: Wi-Fi search, full power, VPN enforced.
+- iPhone Wi-Fi hotspot (5b): low power.
+- AP rescan: every 3 min for ~10 s, skipped while AP clients are connected.
+- USB-C and Ethernet both up: USB-C wins.
 
 ## Open questions
 
-- How is "Ethernet is home" detected once Wi-Fi is off? Proposal: home router MAC.
-- Ethernet but *not* home: Wi-Fi client search, off, or AP?
-- Power profile on the iPhone Wi-Fi hotspot (5b): full or low?
-- While AP is up (5c): how often to drop it and rescan for `Loading` / iPhone; skip while clients are connected?
 - iPhone hotspot internet for all travel devices: to be researched.
-- USB-C and Ethernet both up: USB-C wins (low power) as drafted?
 
 ## Power mode tray widget
 
