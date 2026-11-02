@@ -186,4 +186,7 @@ Prerequisites (done once): Wi-Fi profiles `Loading` and `iPhone 12 Pro Max`
 with `autoconnect=no`; AP profile `Loading Berry` (mode ap, WPA2 CCMP, shared,
 `10.43.0.1/24`, `autoconnect=no`); WireGuard profile `Home VPN` (interface
 `rpi5`, `autoconnect=no`); cloud-init network config disabled; packages
-`usbmuxd wireguard-tools iw nftables`.
+`usbmuxd wireguard-tools iw nftables`. USB-C gadget: `/etc/udev/rules.d/86-usb-gadget-managed.rules`
+(`ENV{DEVTYPE}=="gadget", ENV{NM_UNMANAGED}="0"`, NetworkManager ignores gadgets
+by default) and `/etc/modprobe.d/g_ether.conf` with fixed `dev_addr` /
+`host_addr` so the host sees the same device every boot.
