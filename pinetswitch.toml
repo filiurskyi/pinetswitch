@@ -1,0 +1,24 @@
+# /etc/pinetswitch.toml: every key is optional, defaults are in Config (pinetswitch.py)
+
+home_profile = "Loading"
+home_router_mac = "94:83:c4:e3:d1:4a"   # gateway MAC on eth0 = we are home
+phone_profile = "iPhone 12 Pro Max"
+ap_profile = "Loading Berry"
+
+home_search_secs = 5      # look only for home this long
+total_search_secs = 15    # then also the phone; start the AP after this
+ap_rescan_every = 180     # drop the AP to look for home/phone (skipped while clients are connected)
+ap_rescan_secs = 10
+
+vpn_profile = "Home VPN"
+vpn_iface = "rpi5"
+vpn_endpoint_port = 64894
+vpn_enforce = true        # kill switch: no internet outside the tunnel unless home
+
+[power.full]
+max_freq = 2400000
+governor = "ondemand"
+
+[power.low]
+max_freq = 1500000
+governor = "ondemand"

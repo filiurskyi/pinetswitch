@@ -5,8 +5,8 @@ should use (USB-C gadget, Ethernet, iPhone USB tethering, Wi-Fi client, Wi-Fi
 access point) and which power profile to run, and tells NetworkManager and
 cpufreq to do it.
 
-Status: **design draft**: use cases and the state machine are being refined
-here before any logic is written.
+Status: **implemented, running in dry-run** (logs decisions, changes nothing)
+until the real-world cases have been checked.
 
 ## Principles
 
@@ -152,14 +152,38 @@ Auto.
 ## Layout
 
 ```
-pinetswitch.py        # state snapshot -> ordered rules -> nmcli / cpufreq actions
-pinetswitch.service   # systemd unit
+pinetswitch.py        # snapshot -> Policy.plan (ordered rules) -> reconcile -> nmcli / nft / cpufreq
+test_pinetswitch.py   # policy tests on fake states: python3 -m unittest test_pinetswitch
+pinetswitch.toml      # config, installed as /etc/pinetswitch.toml
+pinetswitch.service   # systemd unit (ExecStart has --dry-run until switched live)
 ```
 
-## Install (later)
+Adding a rule: a `Policy` method `(State, now) -> Plan | None`, inserted into
+`Policy.rules` at its priority, plus a test.
+
+## Usage
 
 ```sh
+pinetswitch status                 # what the daemon sees and wants (JSON)
+pinetswitch power low|full|auto    # power override, no sudo (group netdev)
+journalctl -u pinetswitch -f       # decisions and actions
+```
+
+Runtime files: `/run/pinetswitch/status.json`, `/run/pinetswitch/power-override`.
+A clean stop (`systemctl stop`) lifts the kill switch; a crash leaves it in place.
+
+## Install
+
+```sh
+python3 -m unittest test_pinetswitch
 sudo install -m 755 pinetswitch.py /usr/local/bin/pinetswitch
+sudo install -m 644 pinetswitch.toml /etc/pinetswitch.toml
 sudo install -m 644 pinetswitch.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now pinetswitch
 ```
+
+Prerequisites (done once): Wi-Fi profiles `Loading` and `iPhone 12 Pro Max`
+with `autoconnect=no`; AP profile `Loading Berry` (mode ap, WPA2 CCMP, shared,
+`10.43.0.1/24`, `autoconnect=no`); WireGuard profile `Home VPN` (interface
+`rpi5`, `autoconnect=no`); cloud-init network config disabled; packages
+`usbmuxd wireguard-tools iw nftables`.

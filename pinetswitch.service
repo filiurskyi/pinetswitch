@@ -1,12 +1,12 @@
 [Unit]
-Description=pinetswitch network policy (drives NetworkManager)
+Description=pinetswitch network and power policy (drives NetworkManager)
 After=NetworkManager.service
 Requires=NetworkManager.service
 
 [Service]
-ExecStart=/usr/local/bin/pinetswitch --dry-run
-Restart=on-failure
-RestartSec=5
+ExecStart=/usr/local/bin/pinetswitch run --dry-run
+Restart=always
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
