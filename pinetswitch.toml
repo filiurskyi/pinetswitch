@@ -14,6 +14,7 @@ ap_rescan_secs = 10
 vpn_profile = "Home VPN"
 vpn_iface = "rpi5"
 vpn_endpoint_port = 64894
+vpn_listen_port = 51820   # fixed local WireGuard port (set on the NM profile too)
 vpn_enforce = true        # kill switch: no internet outside the tunnel unless home
 
 usb_subnet = "10.42.0.0/24"   # own networks whose clients may be routed (Docker drops forwarding)

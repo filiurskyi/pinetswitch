@@ -30,6 +30,7 @@ OVERRIDE_FILE = RUN_DIR / "power-override"  # auto | full | low, written by the 
 STATUS_FILE = RUN_DIR / "status.json"
 CPUFREQ = Path("/sys/devices/system/cpu/cpufreq")
 NFT_TABLE = "pinetswitch"
+NFT_INBOUND = "pinetswitch_in"
 
 
 # --- config ------------------------------------------------------------------
@@ -52,6 +53,9 @@ class Config:
     vpn_iface: str = "rpi5"
     vpn_endpoint_port: int = 64894
     vpn_enforce: bool = True
+    trust_phone_inbound: bool = True  # accept connections from devices on the phone hotspot
+    trusted: list = field(default_factory=list)  # interfaces always trusted for inbound
+    vpn_listen_port: int = 51820  # fixed WireGuard port, the only one open on untrusted networks
     power: dict = field(default_factory=lambda: {
         "full": {"max_freq": 2400000, "governor": "ondemand"},
         "low": {"max_freq": 1500000, "governor": "ondemand"},
@@ -82,6 +86,8 @@ class State:
     wired_up: bool = False  # any wired uplink (eth0, a dock or USB NIC) connected
     wired_home: bool = False  # ... and every connected one is behind the home router
     tether_up: bool = False
+    wired_ifaces: tuple = ()  # connected wired uplinks
+    tether_ifaces: tuple = ()
     wifi_radio: bool = True
     wifi_mode: str = "off"  # off | connecting | client | ap
     wifi_profile: str | None = None  # active NM profile on the Wi-Fi device
@@ -89,6 +95,7 @@ class State:
     ap_clients: int = 0
     vpn_up: bool = False
     killswitch: bool = False
+    inbound: tuple | None = None  # trusted interfaces the inbound firewall allows, None = not applied
     power: str | None = None  # full | low | None (matches neither profile)
     override: str = "auto"
 
@@ -110,7 +117,7 @@ class Plan:
 
 @dataclass
 class Action:
-    kind: str  # wifi | power | vpn | killswitch
+    kind: str  # wifi | power | vpn | killswitch | inbound
     detail: str
     profile: str | None = None  # NM profile being brought up, for failure backoff
 
@@ -286,7 +293,51 @@ def reconcile(s: State, p: Plan, cfg: Config, policy: Policy, now: float) -> lis
     want_ks = cfg.vpn_enforce and not is_home(s, cfg)
     if want_ks != s.killswitch:
         acts.append(Action("killswitch", "on" if want_ks else "off"))
+
+    trusted = trusted_ifaces(s, cfg)
+    if s.inbound != trusted:
+        acts.append(Action("inbound", "trust " + ",".join(trusted)))
     return acts
+
+
+def trusted_ifaces(s: State, cfg: Config) -> tuple:
+    """Interfaces that may open connections to the Pi; everything else gets replies only.
+
+    Trusted: loopback, USB-C, the VPN, Docker, the iPhone USB tether, the Pi's
+    own AP, home uplinks, and the phone hotspot (cfg.trust_phone_inbound).
+    """
+    t = {"lo", cfg.usb, cfg.vpn_iface, "docker0", *s.tether_ifaces, *cfg.trusted}
+    if s.wired_home:
+        t.update(s.wired_ifaces)
+    profiles = {cfg.home_profile} | ({cfg.phone_profile} if cfg.trust_phone_inbound else set())
+    if s.wifi_mode == AP or (s.wifi_mode == "client" and s.wifi_profile in profiles):
+        t.add(cfg.wifi)
+    return tuple(sorted(t))
+
+
+def inbound_ruleset(trusted: tuple, cfg: Config) -> str:
+    """Untrusted interfaces get replies, DHCP, WireGuard and IPv6 neighbour discovery
+    only, and the Pi does not announce itself there over mDNS."""
+    ifs = ", ".join(f'"{i}"' for i in trusted)
+    return f"""
+table inet {NFT_INBOUND}
+delete table inet {NFT_INBOUND}
+table inet {NFT_INBOUND} {{
+  chain input {{
+    type filter hook input priority 0; policy accept;
+    ct state established,related accept
+    iifname {{ {ifs} }} accept
+    iifname "br-*" accept
+    udp dport {{ 68, 546, {cfg.vpn_listen_port} }} accept
+    icmpv6 type {{ nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert, packet-too-big }} accept
+    counter drop
+  }}
+  chain output {{
+    type filter hook output priority 0; policy accept;
+    udp dport 5353 oifname != {{ {ifs} }} drop
+  }}
+}}
+"""
 
 
 def killswitch_ruleset(cfg: Config) -> str:
@@ -365,6 +416,7 @@ class System:
         self.cfg, self.dry_run = cfg, dry_run
         self.gw_mac: dict[tuple[str, str], str] = {}  # (wired dev, gateway IP) -> MAC, cached while up
         self.last_rescan = 0.0
+        self.inbound: tuple | None = None  # trusted interfaces last applied
 
     def ssids(self) -> dict[str, str]:
         cfg = self.cfg
@@ -388,10 +440,12 @@ class System:
         s.usb_up = connected(cfg.usb) and carrier(cfg.usb)
         tethers = {d for d in devs if driver(d) == cfg.tether_driver}
         s.tether_up = any(connected(d) for d in tethers)
+        s.tether_ifaces = tuple(sorted(d for d in tethers if connected(d)))
         wired = [d for d, (typ, _, _) in devs.items()
                  if typ == "ethernet" and d != cfg.usb and d not in tethers and connected(d)
                  and any(fnmatch.fnmatch(d, pat) for pat in cfg.wired)]
         s.wired_up = bool(wired)
+        s.wired_ifaces = tuple(sorted(wired))
         s.wired_home = s.wired_up and all(self.wired_is_home(d) for d in wired)
         self.gw_mac = {k: v for k, v in self.gw_mac.items() if k[0] in wired}
         s.wifi_radio = nmcli("radio", "wifi").strip() == "enabled"
@@ -408,6 +462,9 @@ class System:
             s.ap_clients = run("iw", "dev", cfg.wifi, "station", "dump").stdout.count("Station ")
         s.vpn_up = connected(cfg.vpn_iface)
         s.killswitch = run("nft", "list", "table", "inet", NFT_TABLE).returncode == 0
+        if run("nft", "list", "table", "inet", NFT_INBOUND).returncode != 0:
+            self.inbound = None
+        s.inbound = self.inbound
         s.power = self.read_power()
         s.override = read_override()
         return s
@@ -468,6 +525,14 @@ class System:
             r = run("nft", "-f", "-", input=killswitch_ruleset(cfg))
         elif a.kind == "killswitch":
             r = run("nft", "delete", "table", "inet", NFT_TABLE)
+        elif a.kind == "inbound" and a.detail.startswith("trust "):
+            trusted = tuple(a.detail[6:].split(","))
+            r = run("nft", "-f", "-", input=inbound_ruleset(trusted, cfg))
+            if r.returncode == 0:
+                self.inbound = trusted
+        elif a.kind == "inbound":
+            r = run("nft", "delete", "table", "inet", NFT_INBOUND)
+            self.inbound = None
         else:
             raise ValueError(f"unknown action {a}")
         if r.returncode != 0:
@@ -605,8 +670,12 @@ def daemon(cfg: Config, dry_run: bool) -> None:
         wake.wait(cfg.interval)
         wake.clear()
 
-    if not dry_run and sysm.snapshot().killswitch:
-        sysm.execute(Action("killswitch", "off"))  # a clean stop lifts it; a crash keeps it
+    if not dry_run:  # a clean stop lifts both firewalls; a crash keeps them
+        s = sysm.snapshot()
+        if s.killswitch:
+            sysm.execute(Action("killswitch", "off"))
+        if s.inbound is not None:
+            sysm.execute(Action("inbound", "off"))
     log.info("stopped")
 
 
