@@ -1,0 +1,13 @@
+[Unit]
+Description=pinetswitch closed firewall defaults until the daemon takes over
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target pinetswitch.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pinetswitch boot-firewall
+
+[Install]
+WantedBy=sysinit.target

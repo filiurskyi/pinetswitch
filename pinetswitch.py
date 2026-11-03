@@ -315,6 +315,19 @@ def trusted_ifaces(s: State, cfg: Config) -> tuple:
     return tuple(sorted(t))
 
 
+def boot_rulesets(cfg: Config) -> str:
+    """Closed defaults loaded before the network comes up (pinetswitch-boot-firewall.service).
+
+    Inbound: only the always-trusted interfaces (loopback, USB-C, VPN, Docker,
+    cfg.trusted). Outbound: the kill switch when enforced, since home is not
+    known yet. The daemon replaces both on its first ticks.
+    """
+    rules = inbound_ruleset(trusted_ifaces(State(), cfg), cfg)
+    if cfg.vpn_enforce:
+        rules += f"table inet {NFT_TABLE}\ndelete table inet {NFT_TABLE}\n" + killswitch_ruleset(cfg)
+    return rules
+
+
 def inbound_ruleset(trusted: tuple, cfg: Config) -> str:
     """Untrusted interfaces get replies, DHCP, WireGuard and IPv6 neighbour discovery
     only, and the Pi does not announce itself there over mDNS."""
@@ -688,6 +701,8 @@ def main() -> None:
     r.add_argument("--dry-run", action="store_true", help="log decisions, change nothing")
     r.add_argument("--config", type=Path, default=CONFIG_PATH, help=f"default {CONFIG_PATH}")
     sub.add_parser("status", help="show what the running daemon sees and wants")
+    bf = sub.add_parser("boot-firewall", help="load closed firewall defaults (early boot)")
+    bf.add_argument("--config", type=Path, default=CONFIG_PATH, help=f"default {CONFIG_PATH}")
     pw = sub.add_parser("power", help="override the power profile")
     pw.add_argument("mode", choices=["auto", "full", "low"])
     args = ap.parse_args()
@@ -695,6 +710,10 @@ def main() -> None:
 
     if args.cmd == "run":
         daemon(load_config(args.config), args.dry_run)
+    elif args.cmd == "boot-firewall":
+        r = run("nft", "-f", "-", input=boot_rulesets(load_config(args.config)))
+        if r.returncode != 0:
+            sys.exit(f"nft failed: {r.stderr.strip()}")
     elif args.cmd == "status":
         try:
             print(STATUS_FILE.read_text(), end="")

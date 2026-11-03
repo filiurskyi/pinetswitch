@@ -8,7 +8,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from pinetswitch import (AP, DISCONNECT, JOIN, LEAVE, OFF, SCAN, Config, Policy, State, System,
-                         forward_rules, inbound_ruleset, killswitch_ruleset, trusted_ifaces, load_config, reconcile, split_terse,
+                         boot_rulesets, forward_rules, inbound_ruleset, killswitch_ruleset, trusted_ifaces, load_config, reconcile, split_terse,
                          wifi_autoconnect_on)
 from pinetswitch_tray import ICONS, current_mode, describe, kanshi_config
 
@@ -213,6 +213,14 @@ class Inbound(Base):
         want = trusted_ifaces(s, self.cfg)
         self.assertIn(("inbound", "trust " + ",".join(want), None), acts_of(s, p, self.pol, 0, inbound=True))
         self.assertEqual(acts_of(replace(s, inbound=want), p, self.pol, 0, inbound=True), set())
+
+    def test_boot_defaults_closed(self):
+        r = boot_rulesets(self.cfg)
+        self.assertIn('iifname { "docker0", "lo", "rpi5", "usb0" } accept', r)
+        self.assertNotIn('"wlan0"', r)
+        self.assertIn("table inet pinetswitch {", r)  # kill switch until home is known
+        self.cfg.vpn_enforce = False
+        self.assertNotIn("table inet pinetswitch {", boot_rulesets(self.cfg))
 
     def test_ruleset(self):
         r = inbound_ruleset(("lo", "usb0"), Config())
