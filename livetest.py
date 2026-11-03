@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Live test of the Wi-Fi, VPN, kill switch and power rules on the Pi.
 
-    sudo python3 -I livetest.py
+    sudo python3 -I livetest.py [foreign-wifi] [ap] [ap-client]
+
+Default: foreign-wifi and ap. ap-client needs another device that joins the AP.
 
 Runs the installed pinetswitch for real (no dry run) with test configs that
 point USB-C at a fake interface name and match no wired NIC, so a management session over
@@ -14,6 +16,8 @@ Scenarios:
                 home-only window, then VPN up, kill switch on, low power,
                 inbound firewall closes the Wi-Fi (phone set untrusted),
                 tunnel works, traffic outside it is blocked, LAN still reachable
+  ap-client     AP with a client joined from another device: no rescan for
+                two rescan periods while it stays connected
   ap            nothing known in range: AP `Loading Berry` after the search,
                 `rpi.local` answered by the AP's DNS, forwarding allowed for
                 AP clients, AP rescan and back
@@ -185,6 +189,31 @@ def access_point() -> None:
         check(not killswitch_on() and inbound_trusted() is None, "ap: clean stop lifted kill switch and inbound firewall")
 
 
+def ap_client() -> None:
+    """Needs another device that joins `Loading Berry` (e.g. the laptop) and stays."""
+    every = 20
+    d = Daemon("ap-client", {"home_profile": "__no_home__", "phone_profile": "__no_phone__",
+                             "home_search_secs": 2, "total_search_secs": 6,
+                             "ap_rescan_every": every, "ap_rescan_secs": 5})
+    try:
+        if not check(wait_for(lambda s: s["state"]["wifi_mode"] == "ap", 45) is not None, "ap-client: AP started"):
+            return
+        print("join 'Loading Berry' from another device now (90 s)", flush=True)
+        if not check(wait_for(lambda s: s["state"]["ap_clients"] > 0, 90) is not None, "ap-client: a client joined"):
+            return
+        seen: list = []
+        wait_for(lambda s: False, 2 * every + 5, seen)  # watch two rescan periods
+        check(not any("rescan" in x or "search" in x for x in seen),
+              f"ap-client: no rescan while a client is connected ({' -> '.join(dict.fromkeys(seen))})")
+        check(status().get("state", {}).get("ap_clients", 0) > 0, "ap-client: client still connected")
+    finally:
+        d.stop()
+        check(not killswitch_on() and inbound_trusted() is None, "ap-client: clean stop lifted kill switch and inbound firewall")
+
+
+SCENARIOS = {"foreign-wifi": foreign_wifi, "ap": access_point, "ap-client": ap_client}
+
+
 def main() -> None:
     if os.geteuid() != 0:
         sys.exit("run as root: sudo python3 -I livetest.py")
@@ -197,8 +226,8 @@ def main() -> None:
     Path("/run/pinetswitch").mkdir(exist_ok=True)
     (Path("/run/pinetswitch") / "power-override").write_text("auto\n")
     try:
-        foreign_wifi()
-        access_point()
+        for name in sys.argv[1:] or ["foreign-wifi", "ap"]:
+            SCENARIOS[name]()
     finally:
         sh("nmcli", "device", "disconnect", "wlan0")
         if wifi_before:
