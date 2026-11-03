@@ -151,9 +151,18 @@ class Links(Base):
 
     def test_usb_host_joins_home_wifi_when_idle(self):
         s = State(usb_up=True, visible=frozenset({HOME, PHONE}), power="low", killswitch=True)
-        p, a = self.step(s, 0)
+        self.assertEqual(self.step(s, 0)[0].wifi, LEAVE)  # just went idle: maybe a manual switch
+        self.assertEqual(self.step(s, 4.9)[0].wifi, LEAVE)
+        p, a = self.step(s, 5)
         self.assertEqual((p.situation, p.wifi), ("usb-host", JOIN(HOME)))
         self.assertIn(("wifi", "up", HOME), a)
+
+    def test_usb_host_idle_timer_resets_when_wifi_busy(self):
+        idle = State(usb_up=True, visible=frozenset({HOME}))
+        self.step(idle, 0)
+        self.step(State(usb_up=True, wifi_mode="connecting", wifi_profile=BERRY), 3)
+        self.assertEqual(self.step(idle, 6)[0].wifi, LEAVE)
+        self.assertEqual(self.step(idle, 11)[0].wifi, JOIN(HOME))
 
     def test_usb_host_never_joins_phone_or_leaves_manual_wifi(self):
         s = State(usb_up=True, visible=frozenset({PHONE}), power="low", killswitch=True)

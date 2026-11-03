@@ -63,6 +63,7 @@ class Config:
     usb_subnet: str = "10.42.0.0/24"  # NetworkManager shared network on USB-C
     ap_subnet: str = "10.43.0.0/24"
     retry_secs: float = 30
+    usb_join_idle_secs: float = 5  # on USB-C, Wi-Fi must be idle this long before joining home
     housekeeping_secs: float = 30
     interval: float = 2
 
@@ -137,11 +138,16 @@ class Policy:
         self.search_since: float | None = None
         self.rescanning = False  # search started by an AP rescan (short window)
         self.ap_since: float | None = None
+        self.wifi_idle_since: float | None = None  # when Wi-Fi was last seen going idle
         self.failed: dict[str, float] = {}  # profile -> time of last failed activation
         self.rules = [self.usb_host, self.tether, self.home_wired, self.home_wifi,
                       self.foreign_wired, self.roaming]
 
     def plan(self, s: State, now: float) -> Plan:
+        if s.wifi_mode != "off":
+            self.wifi_idle_since = None
+        elif self.wifi_idle_since is None:
+            self.wifi_idle_since = now
         for rule in self.rules:
             if (p := rule(s, now)) is not None:
                 if rule not in (self.foreign_wired, self.roaming):
@@ -164,9 +170,12 @@ class Policy:
     # rules, in priority order
 
     def usb_host(self, s, now):
-        """Low power; Wi-Fi joins home when it is idle and home is in range, otherwise left alone."""
+        """Low power; Wi-Fi joins home once it has been idle for a while and home is in
+        range, otherwise it is left alone (a hand-started AP or network passes through
+        a brief idle state that must not be hijacked)."""
         if s.usb_up:
-            if s.wifi_mode == "off" and self.joinable(self.cfg.home_profile, s, now):
+            idle = self.wifi_idle_since is not None and now - self.wifi_idle_since >= self.cfg.usb_join_idle_secs
+            if idle and self.joinable(self.cfg.home_profile, s, now):
                 return Plan("usb-host", JOIN(self.cfg.home_profile), "low")
             return Plan("usb-host", LEAVE, "low")
 
