@@ -27,7 +27,7 @@ Status: **live**. Use `--dry-run` (logs decisions, changes nothing) to try chang
 |---|---|---|---|
 | 1 | **Home, Ethernet** | Wi-Fi radio off. If Ethernet drops: radio on and join `Loading` immediately | full |
 | 2 | **Home, Wi-Fi** | On `Loading`. When Ethernet comes up (and is home): Wi-Fi off, i.e. case 1 | full |
-| 3 | **On the go, USB-C** (power + LAN from laptop/tablet) | `usb0` gadget, reachable as `rpi.local`. Wi-Fi left alone (joined manually) | low |
+| 3 | **On the go, USB-C** (power + LAN from laptop/tablet) | `usb0` gadget, reachable as `rpi.local`. Wi-Fi joins `Loading` when idle and in range, otherwise left alone (other networks joined by hand) | low |
 | 4 | **On the go, iPhone USB tethering** (iPhone on USB-A) | Internet via iPhone; start AP `Loading Berry` and share it | low |
 | 5a | **On the go, Wi-Fi search 0–5 s** | Look for `Loading` only (are we home?) | — |
 | 5b | **On the go, Wi-Fi search 5–15 s** | Look for `iPhone 12 Pro Max` hotspot, join it (internet via LTE) | low |
