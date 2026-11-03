@@ -5,8 +5,7 @@ should use (USB-C gadget, Ethernet, iPhone USB tethering, Wi-Fi client, Wi-Fi
 access point) and which power profile to run, and tells NetworkManager and
 cpufreq to do it.
 
-Status: **implemented, running in dry-run** (logs decisions, changes nothing)
-until the real-world cases have been checked.
+Status: **live**. Use `--dry-run` (logs decisions, changes nothing) to try changes.
 
 ## Principles
 

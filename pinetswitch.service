@@ -4,7 +4,7 @@ After=NetworkManager.service
 Requires=NetworkManager.service
 
 [Service]
-ExecStart=/usr/local/bin/pinetswitch run --dry-run
+ExecStart=/usr/local/bin/pinetswitch run
 Restart=always
 RestartSec=3
 
