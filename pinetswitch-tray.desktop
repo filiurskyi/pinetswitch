@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=pinetswitch tray
+Comment=Network situation and power profile of pinetswitch
+Exec=/usr/local/bin/pinetswitch-tray
+Icon=power-profile-balanced-symbolic
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
