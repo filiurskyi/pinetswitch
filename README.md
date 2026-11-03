@@ -151,6 +151,10 @@ The kill switch only controls traffic leaving the Pi. A second nftables table,
 System hardening that goes with it (not managed by pinetswitch):
 `/etc/ssh/sshd_config.d/10-keys-only.conf` turns off password and root logins
 (cloud-init had enabled passwords), and Cockpit (`cockpit.socket`) is disabled.
+`/etc/avahi/services/rfb.service` announces the VNC server (`_rfb._tcp`, "rpi
+VNC") for viewers that discover servers, such as AVNC on Android; avahi has
+`deny-interfaces=docker0`. On untrusted networks the inbound firewall drops
+mDNS, so the announcement stays hidden there.
 
 ## Decisions
 
@@ -220,8 +224,9 @@ VPN up, kill switch on, tunnel works and bypass is blocked, LAN still
 reachable, low power, the AP after the search window, `rpi.local` / `rpi`
 answered by the AP's DNS, the AP rescan cycle, the inbound firewall closing an
 untrusted Wi-Fi but trusting the AP, and both firewalls lifted on a
-clean stop. Not covered: a real foreign network, iPhone USB tethering, skipping
-the rescan while AP clients are connected, IPv6 (checked only when the uplink
+clean stop. `sudo python3 -I livetest.py ap-client` additionally checks that
+the AP rescan is skipped while a client (e.g. the laptop) stays connected.
+Not covered: a real foreign network, iPhone USB tethering, IPv6 (checked only when the uplink
 has an IPv6 default route).
 
 Runtime files: `/run/pinetswitch/status.json`, `/run/pinetswitch/power-override`.
