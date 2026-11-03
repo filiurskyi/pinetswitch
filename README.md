@@ -150,6 +150,10 @@ StatusNotifierItems; the app uses `gir1.2-ayatanaappindicator3-0.1`):
 - menu: where the Pi is (`Home · Ethernet`, `On the go`, ...), a detail line
   (`Wi-Fi: … · VPN on · kill switch · power low`), and *Power: Auto / Full /
   Low*, which writes `/run/pinetswitch/power-override`
+- *Screen* submenu for the headless VNC output: *PC (1920×1080)*, *Tablet
+  (1500×1000, 3:2 like the Xiaomi Pad)*, *Low-res (1200×800)*. Applied at once
+  with `wlr-randr --custom-mode` and saved to `~/.config/kanshi/config` (and
+  `config.init`) as `mode --custom`, so it holds after a reboot
 
 Starts with the desktop session via `~/.config/autostart/pinetswitch-tray.desktop`.
 
@@ -157,7 +161,7 @@ Starts with the desktop session via `~/.config/autostart/pinetswitch-tray.deskto
 
 ```
 pinetswitch.py            # snapshot -> Policy.plan (ordered rules) -> reconcile -> nmcli / nft / cpufreq
-pinetswitch_tray.py       # tray icon and power menu, installed as /usr/local/bin/pinetswitch-tray
+pinetswitch_tray.py       # tray icon, power and screen menu, installed as /usr/local/bin/pinetswitch-tray
 pinetswitch-tray.desktop  # autostart entry for the tray
 test_pinetswitch.py       # unit tests: policy on fake states, config file, tray labels
 livetest.py               # live test on the Pi: Wi-Fi search, phone join, VPN, kill switch, AP, power

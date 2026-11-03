@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pinetswitch import (AP, DISCONNECT, JOIN, LEAVE, OFF, SCAN, Config, Policy, State,
                          killswitch_ruleset, load_config, reconcile, split_terse)
-from pinetswitch_tray import ICONS, describe
+from pinetswitch_tray import ICONS, current_mode, describe, kanshi_config
 
 HOME, PHONE, BERRY = "Loading", "iPhone 12 Pro Max", "Loading Berry"
 
@@ -243,6 +243,22 @@ class Tray(unittest.TestCase):
         self.assertEqual(d["place"], "USB-C to host")
         self.assertIn("Wi-Fi: Cafe", d["detail"])
         self.assertEqual(d["icon"], ICONS[None])  # power matches no profile
+
+
+
+class TrayScreen(unittest.TestCase):
+    def test_current_mode_from_wlr_randr_json(self):
+        outputs = [{"name": "HDMI-A-1", "enabled": False, "modes": []},
+                   {"name": "NOOP-1", "enabled": True, "modes": [
+                       {"width": 1920, "height": 1080, "current": False},
+                       {"width": 1500, "height": 1000, "current": True}]}]
+        self.assertEqual(current_mode(outputs), ("NOOP-1", "1500x1000"))
+        self.assertIsNone(current_mode([]))
+
+    def test_kanshi_config_uses_custom_mode(self):
+        self.assertIn("output NOOP-1 enable scale 1.000000 mode --custom 1920x1080 ",
+                      kanshi_config("NOOP-1", "1920x1080"))
+        self.assertTrue(kanshi_config("NOOP-1", "1500x1000").startswith("profile {\n"))
 
 
 if __name__ == "__main__":
