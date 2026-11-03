@@ -149,6 +149,18 @@ class Links(Base):
         self.assertEqual((p.situation, p.wifi), ("usb-host", LEAVE))
         self.assertEqual(a, {("wifi", "radio on", None), ("power", "low", None)})
 
+    def test_usb_host_joins_home_wifi_when_idle(self):
+        s = State(usb_up=True, visible=frozenset({HOME, PHONE}), power="low", killswitch=True)
+        p, a = self.step(s, 0)
+        self.assertEqual((p.situation, p.wifi), ("usb-host", JOIN(HOME)))
+        self.assertIn(("wifi", "up", HOME), a)
+
+    def test_usb_host_never_joins_phone_or_leaves_manual_wifi(self):
+        s = State(usb_up=True, visible=frozenset({PHONE}), power="low", killswitch=True)
+        self.assertEqual(self.step(s, 0)[0].wifi, LEAVE)
+        s = State(usb_up=True, wifi_mode="client", wifi_profile="Cafe", visible=frozenset({HOME}))
+        self.assertEqual(self.step(s, 0)[0].wifi, LEAVE)
+
     def test_usb_host_with_manual_foreign_wifi_gets_vpn(self):
         s = State(usb_up=True, wifi_mode="client", wifi_profile="Cafe", power="low", killswitch=True)
         self.assertEqual(self.step(s, 0)[1], {("vpn", "up", "Home VPN")})

@@ -164,7 +164,10 @@ class Policy:
     # rules, in priority order
 
     def usb_host(self, s, now):
+        """Low power; Wi-Fi joins home when it is idle and home is in range, otherwise left alone."""
         if s.usb_up:
+            if s.wifi_mode == "off" and self.joinable(self.cfg.home_profile, s, now):
+                return Plan("usb-host", JOIN(self.cfg.home_profile), "low")
             return Plan("usb-host", LEAVE, "low")
 
     def tether(self, s, now):
