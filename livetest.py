@@ -14,7 +14,8 @@ Scenarios:
                 home-only window, then VPN up, kill switch on, low power,
                 tunnel works, traffic outside it is blocked, LAN still reachable
   ap            nothing known in range: AP `Loading Berry` after the search,
-                `rpi.local` answered by the AP's DNS, AP rescan and back
+                `rpi.local` answered by the AP's DNS, forwarding allowed for
+                AP clients, AP rescan and back
 """
 import json
 import os
@@ -122,6 +123,8 @@ def foreign_wifi() -> None:
         check(r.stdout == "200" and wg_rx() > rx, f"foreign-wifi: internet through the tunnel (http {r.stdout}, wg rx grew)")
         r = sh("curl", "-s", "-m", "6", "--interface", "wlan0", "-o", "/dev/null", "http://1.1.1.1")
         check(r.returncode != 0, "foreign-wifi: traffic outside the tunnel blocked (curl --interface wlan0)")
+        ns = [l.split()[1] for l in Path("/etc/resolv.conf").read_text().splitlines() if l.startswith("nameserver")]
+        check(ns == ["10.1.0.1"], f"foreign-wifi: DNS only through the VPN (resolv.conf: {', '.join(ns)})")
         gw = json.loads(sh("ip", "-j", "route", "show", "default", "dev", "wlan0").stdout or "[{}]")[0].get("gateway")
         check(bool(gw) and sh("ping", "-c1", "-W2", gw).returncode == 0, f"foreign-wifi: local gateway {gw} reachable")
         if sh("ip", "-6", "route", "show", "default").stdout.strip():
@@ -153,6 +156,8 @@ def access_point() -> None:
             check(ans == "10.43.0.1", f"ap: DNS on the AP answers {name} = {ans or 'nothing'}")
         check(max_freq() == 1500000, "ap: low power")
         check(killswitch_on() and not st["state"]["vpn_up"], "ap: kill switch on, no VPN (no uplink)")
+        fwd = ["-i", "wlan0", "-s", "10.43.0.0/24", "-j", "ACCEPT"]
+        check(sh("iptables", "-C", "DOCKER-USER", *fwd).returncode == 0, "ap: AP clients may be forwarded (DOCKER-USER)")
         clients = status().get("state", {}).get("ap_clients", 0)
         if clients:
             print(f"note: {clients} AP client(s) connected, the rescan will be skipped", flush=True)
@@ -186,6 +191,9 @@ def main() -> None:
             sh("nmcli", "-w", "20", "connection", "up", "id", wifi_before)
         for pol in Path("/sys/devices/system/cpu/cpufreq").glob("policy*"):
             (pol / "scaling_max_freq").write_text(str(freq_before))
+        for rule in sh("iptables", "-S", "DOCKER-USER").stdout.splitlines():
+            if BASE["usb"] in rule:  # forwarding rules the test daemon added for its fake USB name
+                sh("iptables", *rule.replace("-A ", "-D ", 1).split())
         if was_active:
             sh("systemctl", "start", "pinetswitch")
     failed = [w for ok, w in results if not ok]

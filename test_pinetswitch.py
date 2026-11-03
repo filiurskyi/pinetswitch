@@ -8,7 +8,8 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from pinetswitch import (AP, DISCONNECT, JOIN, LEAVE, OFF, SCAN, Config, Policy, State, System,
-                         killswitch_ruleset, load_config, reconcile, split_terse)
+                         forward_rules, killswitch_ruleset, load_config, reconcile, split_terse,
+                         wifi_autoconnect_on)
 from pinetswitch_tray import ICONS, current_mode, describe, kanshi_config
 
 HOME, PHONE, BERRY = "Loading", "iPhone 12 Pro Max", "Loading Berry"
@@ -182,6 +183,18 @@ class Helpers(unittest.TestCase):
     def test_split_terse(self):
         self.assertEqual(split_terse(r"wlan0:wifi:connected:a\:b\\c"),
                          ["wlan0", "wifi", "connected", "a:b\\c"])
+
+    def test_wifi_autoconnect_on(self):
+        listing = ("u1:802-11-wireless:yes:Cafe\\: free\n"
+                   "u2:802-11-wireless:no:Loading\n"
+                   "u3:802-3-ethernet:yes:Wired eth0\n")
+        self.assertEqual(wifi_autoconnect_on(listing), [("u1", "Cafe: free")])
+
+    def test_forward_rules_only_own_subnets(self):
+        rules = [" ".join(r) for r in forward_rules(Config())]
+        self.assertIn("-i usb0 -s 10.42.0.0/24 -j ACCEPT", rules)
+        self.assertIn("-i wlan0 -s 10.43.0.0/24 -j ACCEPT", rules)
+        self.assertTrue(all("-s 10.4" in r or "ESTABLISHED" in r for r in rules))
 
     def test_ruleset(self):
         r = killswitch_ruleset(Config())
