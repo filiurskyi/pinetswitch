@@ -567,6 +567,7 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", help="run the policy loop (systemd)")
     r.add_argument("--dry-run", action="store_true", help="log decisions, change nothing")
+    r.add_argument("--config", type=Path, default=CONFIG_PATH, help=f"default {CONFIG_PATH}")
     sub.add_parser("status", help="show what the running daemon sees and wants")
     pw = sub.add_parser("power", help="override the power profile")
     pw.add_argument("mode", choices=["auto", "full", "low"])
@@ -574,7 +575,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     if args.cmd == "run":
-        daemon(load_config(), args.dry_run)
+        daemon(load_config(args.config), args.dry_run)
     elif args.cmd == "status":
         try:
             print(STATUS_FILE.read_text(), end="")

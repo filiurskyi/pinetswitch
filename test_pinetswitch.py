@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Policy tests on fake states: python3 -m unittest -v test_pinetswitch"""
+"""Policy and tray tests on fake states: python3 -m unittest -v test_pinetswitch"""
+import tempfile
 import unittest
-from dataclasses import replace
+from dataclasses import asdict, replace
+from pathlib import Path
 
 from pinetswitch import (AP, DISCONNECT, JOIN, LEAVE, OFF, SCAN, Config, Policy, State,
-                         killswitch_ruleset, reconcile, split_terse)
+                         killswitch_ruleset, load_config, reconcile, split_terse)
+from pinetswitch_tray import ICONS, describe
 
 HOME, PHONE, BERRY = "Loading", "iPhone 12 Pro Max", "Loading Berry"
 
@@ -182,6 +185,64 @@ class Helpers(unittest.TestCase):
         r = killswitch_ruleset(Config())
         self.assertIn('"rpi5"', r)
         self.assertIn("64894", r)
+
+
+class ConfigFile(unittest.TestCase):
+    def load(self, text):
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
+            f.write(text)
+        try:
+            return load_config(Path(f.name))
+        finally:
+            Path(f.name).unlink()
+
+    def test_shipped_config_loads(self):
+        cfg = load_config(Path(__file__).with_name("pinetswitch.toml"))
+        self.assertEqual(cfg.home_router_mac, "94:83:c4:e3:d1:4a")
+        self.assertEqual(cfg.power["low"]["max_freq"], 1500000)
+
+    def test_unknown_key_rejected(self):
+        with self.assertRaises(SystemExit):
+            self.load("home_profil = 'typo'\n")
+
+    def test_mac_lowercased(self):
+        self.assertEqual(self.load("home_router_mac = 'AA:BB:CC:DD:EE:FF'\n").home_router_mac,
+                         "aa:bb:cc:dd:ee:ff")
+
+
+class Tray(unittest.TestCase):
+    def status(self, situation, now=1000.0, **state):
+        return {"situation": situation, "dry_run": False, "time": now,
+                "state": asdict(replace(State(), **state))}
+
+    def test_not_running_or_stale(self):
+        self.assertEqual(describe(None, 0)["place"], "pinetswitch not running")
+        d = describe(self.status("home-wired"), 1000 + 60)
+        self.assertEqual(d["icon"], ICONS["error"])
+
+    def test_home_wired(self):
+        d = describe(self.status("home-wired", wifi_radio=False, power="full"), 1001)
+        self.assertEqual(d["place"], "Home · Ethernet")
+        self.assertEqual(d["detail"], "Wi-Fi: off · VPN off · power full")
+        self.assertEqual(d["icon"], ICONS["full"])
+
+    def test_on_phone_with_vpn(self):
+        d = describe(self.status("roaming/phone", wifi_mode="client", wifi_profile=PHONE,
+                                 vpn_up=True, killswitch=True, power="low", override="low"), 1000)
+        self.assertEqual(d["place"], "On the go")
+        self.assertEqual(d["detail"], "Wi-Fi: iPhone hotspot · VPN on · kill switch · power low")
+        self.assertEqual((d["icon"], d["override"]), (ICONS["low"], "low"))
+
+    def test_search_and_ap_labels(self):
+        self.assertIn("searching", describe(self.status("roaming/search 3s"), 1000)["detail"])
+        self.assertIn("hotspot Loading Berry",
+                      describe(self.status("foreign-wired/ap", wifi_mode="ap"), 1000)["detail"])
+
+    def test_usb_host_manual_wifi(self):
+        d = describe(self.status("usb-host", wifi_mode="client", wifi_profile="Cafe"), 1000)
+        self.assertEqual(d["place"], "USB-C to host")
+        self.assertIn("Wi-Fi: Cafe", d["detail"])
+        self.assertEqual(d["icon"], ICONS[None])  # power matches no profile
 
 
 if __name__ == "__main__":
