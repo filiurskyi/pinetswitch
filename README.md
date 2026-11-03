@@ -143,6 +143,10 @@ The kill switch only controls traffic leaving the Pi. A second nftables table,
   and everything else are dropped, and the Pi stops announcing itself over mDNS.
 - Recomputed every tick from the same state as the rules. A clean stop lifts it,
   a crash leaves it.
+- At boot, `pinetswitch-boot-firewall.service` (`pinetswitch boot-firewall`)
+  loads closed defaults before NetworkManager starts: inbound only on the
+  always-trusted interfaces, and the kill switch when enforced. The daemon
+  replaces them on its first ticks.
 
 System hardening that goes with it (not managed by pinetswitch):
 `/etc/ssh/sshd_config.d/10-keys-only.conf` turns off password and root logins
@@ -185,7 +189,8 @@ pinetswitch-tray.desktop  # autostart entry for the tray
 test_pinetswitch.py       # unit tests: policy on fake states, config file, tray labels
 livetest.py               # live test on the Pi: Wi-Fi search, phone join, VPN, kill switch, AP, power
 pinetswitch.toml          # config, installed as /etc/pinetswitch.toml
-pinetswitch.service       # systemd unit (ExecStart has --dry-run until switched live)
+pinetswitch.service       # systemd unit for the daemon
+pinetswitch-boot-firewall.service  # closed firewall defaults at early boot
 ```
 
 Adding a rule: a `Policy` method `(State, now) -> Plan | None`, inserted into
@@ -228,8 +233,9 @@ A clean stop (`systemctl stop`) lifts the kill switch and the inbound firewall; 
 python3 -m unittest test_pinetswitch
 sudo install -m 755 pinetswitch.py /usr/local/bin/pinetswitch
 sudo install -m 644 pinetswitch.toml /etc/pinetswitch.toml
-sudo install -m 644 pinetswitch.service /etc/systemd/system/
+sudo install -m 644 pinetswitch.service pinetswitch-boot-firewall.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now pinetswitch
+sudo systemctl enable pinetswitch-boot-firewall
 sudo install -m 755 pinetswitch_tray.py /usr/local/bin/pinetswitch-tray
 install -D -m 644 pinetswitch-tray.desktop ~/.config/autostart/pinetswitch-tray.desktop
 ```
