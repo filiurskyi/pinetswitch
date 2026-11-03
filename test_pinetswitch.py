@@ -8,15 +8,17 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from pinetswitch import (AP, DISCONNECT, JOIN, LEAVE, OFF, SCAN, Config, Policy, State, System,
-                         forward_rules, killswitch_ruleset, load_config, reconcile, split_terse,
+                         forward_rules, inbound_ruleset, killswitch_ruleset, trusted_ifaces, load_config, reconcile, split_terse,
                          wifi_autoconnect_on)
 from pinetswitch_tray import ICONS, current_mode, describe, kanshi_config
 
 HOME, PHONE, BERRY = "Loading", "iPhone 12 Pro Max", "Loading Berry"
 
 
-def acts_of(s, p, pol, now):
-    return {(a.kind, a.detail, a.profile) for a in reconcile(s, p, pol.cfg, pol, now)}
+def acts_of(s, p, pol, now, inbound=False):
+    """Actions as tuples; inbound firewall actions only when asked (Inbound tests)."""
+    return {(a.kind, a.detail, a.profile) for a in reconcile(s, p, pol.cfg, pol, now)
+            if inbound or a.kind != "inbound"}
 
 
 class Base(unittest.TestCase):
@@ -177,6 +179,48 @@ class Links(Base):
         self.pol.cfg.vpn_enforce = False
         s = State(wired_up=True, power="full")
         self.assertNotIn(("killswitch", "on", None), self.step(s, 0)[1])
+
+
+class Inbound(Base):
+    def trusted(self, **kw):
+        return trusted_ifaces(State(**kw), self.cfg)
+
+    def test_foreign_networks_untrusted(self):
+        self.assertNotIn("wlan0", self.trusted(wifi_mode="client", wifi_profile="Cafe"))
+        self.assertNotIn("eth0", self.trusted(wired_up=True, wired_ifaces=("eth0",)))
+
+    def test_home_phone_ap_tether_trusted(self):
+        self.assertIn("wlan0", self.trusted(wifi_mode="client", wifi_profile=HOME))
+        self.assertIn("wlan0", self.trusted(wifi_mode="client", wifi_profile=PHONE))
+        self.assertIn("wlan0", self.trusted(wifi_mode=AP, wifi_profile=BERRY))
+        self.assertIn("eth1", self.trusted(tether_up=True, tether_ifaces=("eth1",)))
+        self.assertIn("eth0", self.trusted(wired_up=True, wired_home=True, wired_ifaces=("eth0",)))
+
+    def test_management_links_always_trusted(self):
+        self.assertTrue({"lo", "usb0", "rpi5", "docker0"} <= set(self.trusted()))
+
+    def test_configured_extra_trusted(self):
+        self.cfg.trusted = ["eth0"]
+        self.assertIn("eth0", self.trusted(wired_up=True, wired_ifaces=("eth0",)))
+
+    def test_phone_untrusted_when_configured(self):
+        self.cfg.trust_phone_inbound = False
+        self.assertNotIn("wlan0", self.trusted(wifi_mode="client", wifi_profile=PHONE))
+
+    def test_reconcile_applies_only_on_change(self):
+        s = State(wifi_mode="client", wifi_profile="Cafe", killswitch=True, power="low", vpn_up=True)
+        p = self.pol.plan(s, 0)
+        want = trusted_ifaces(s, self.cfg)
+        self.assertIn(("inbound", "trust " + ",".join(want), None), acts_of(s, p, self.pol, 0, inbound=True))
+        self.assertEqual(acts_of(replace(s, inbound=want), p, self.pol, 0, inbound=True), set())
+
+    def test_ruleset(self):
+        r = inbound_ruleset(("lo", "usb0"), Config())
+        self.assertIn('iifname { "lo", "usb0" } accept', r)
+        self.assertIn("ct state established,related accept", r)
+        self.assertIn("udp dport { 68, 546, 51820 } accept", r)
+        self.assertIn('udp dport 5353 oifname != { "lo", "usb0" } drop', r)
+        self.assertIn("delete table inet pinetswitch_in", r)
 
 
 class Helpers(unittest.TestCase):

@@ -12,6 +12,7 @@ restored at the end.
 Scenarios:
   foreign-wifi  `Loading` posing as the phone hotspot: joined only after the
                 home-only window, then VPN up, kill switch on, low power,
+                inbound firewall closes the Wi-Fi (phone set untrusted),
                 tunnel works, traffic outside it is blocked, LAN still reachable
   ap            nothing known in range: AP `Loading Berry` after the search,
                 `rpi.local` answered by the AP's DNS, forwarding allowed for
@@ -29,7 +30,7 @@ from pathlib import Path
 BIN = "/usr/local/bin/pinetswitch"
 STATUS = Path("/run/pinetswitch/status.json")
 POLICY0 = Path("/sys/devices/system/cpu/cpufreq/policy0")
-BASE = {"usb": "none-usb0", "wired": [], "interval": 1}
+BASE = {"usb": "none-usb0", "wired": [], "trusted": ["usb0", "eth0"], "interval": 1}  # keep management links open
 results: list[tuple[bool, str]] = []
 
 
@@ -92,6 +93,14 @@ class Daemon:
         os.unlink(self.cfgfile.name)
 
 
+def inbound_trusted() -> str | None:
+    """The trusted-interface line of the inbound firewall, None when it is not applied."""
+    r = sh("nft", "list", "table", "inet", "pinetswitch_in")
+    if r.returncode != 0:
+        return None
+    return next((l.strip() for l in r.stdout.splitlines() if l.strip().startswith("iifname {")), "")
+
+
 def killswitch_on() -> bool:
     return sh("nft", "list", "table", "inet", "pinetswitch").returncode == 0
 
@@ -106,7 +115,7 @@ def wg_rx() -> int:
 
 
 def foreign_wifi() -> None:
-    d = Daemon("foreign-wifi", {"home_profile": "__no_home__", "phone_profile": "Loading",
+    d = Daemon("foreign-wifi", {"home_profile": "__no_home__", "phone_profile": "Loading", "trust_phone_inbound": False,
                                 "home_search_secs": 3, "total_search_secs": 30})
     try:
         st = wait_for(lambda s: s["state"]["wifi_profile"] == "Loading"
@@ -123,6 +132,9 @@ def foreign_wifi() -> None:
         check(r.stdout == "200" and wg_rx() > rx, f"foreign-wifi: internet through the tunnel (http {r.stdout}, wg rx grew)")
         r = sh("curl", "-s", "-m", "6", "--interface", "wlan0", "-o", "/dev/null", "http://1.1.1.1")
         check(r.returncode != 0, "foreign-wifi: traffic outside the tunnel blocked (curl --interface wlan0)")
+        tr = inbound_trusted()
+        check(tr is not None and '"wlan0"' not in tr and '"usb0"' in tr,
+              f"foreign-wifi: inbound firewall closes wlan0, keeps USB-C open ({tr})")
         ns = [l.split()[1] for l in Path("/etc/resolv.conf").read_text().splitlines() if l.startswith("nameserver")]
         check(ns == ["10.1.0.1"], f"foreign-wifi: DNS only through the VPN (resolv.conf: {', '.join(ns)})")
         gw = json.loads(sh("ip", "-j", "route", "show", "default", "dev", "wlan0").stdout or "[{}]")[0].get("gateway")
@@ -132,7 +144,7 @@ def foreign_wifi() -> None:
                   "foreign-wifi: IPv6 outside the tunnel blocked")
     finally:
         d.stop()
-        check(not killswitch_on(), "foreign-wifi: clean stop lifted the kill switch")
+        check(not killswitch_on() and inbound_trusted() is None, "foreign-wifi: clean stop lifted kill switch and inbound firewall")
         sh("nmcli", "connection", "down", "id", "Home VPN")
 
 
@@ -156,6 +168,8 @@ def access_point() -> None:
             check(ans == "10.43.0.1", f"ap: DNS on the AP answers {name} = {ans or 'nothing'}")
         check(max_freq() == 1500000, "ap: low power")
         check(killswitch_on() and not st["state"]["vpn_up"], "ap: kill switch on, no VPN (no uplink)")
+        tr = inbound_trusted() or ""
+        check('"wlan0"' in tr, f"ap: inbound firewall trusts the AP ({tr})")
         fwd = ["-i", "wlan0", "-s", "10.43.0.0/24", "-j", "ACCEPT"]
         check(sh("iptables", "-C", "DOCKER-USER", *fwd).returncode == 0, "ap: AP clients may be forwarded (DOCKER-USER)")
         clients = status().get("state", {}).get("ap_clients", 0)
@@ -168,7 +182,7 @@ def access_point() -> None:
             check(back is not None, f"ap: rescanned and came back ({' -> '.join(dict.fromkeys(seen))})")
     finally:
         d.stop()
-        check(not killswitch_on(), "ap: clean stop lifted the kill switch")
+        check(not killswitch_on() and inbound_trusted() is None, "ap: clean stop lifted kill switch and inbound firewall")
 
 
 def main() -> None:
