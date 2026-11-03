@@ -129,6 +129,25 @@ cannot be told apart reliably, so the policy keys on the link, not the supply.
   tunnel or not at all.
 - Tunnel down on a foreign network = no internet, by design.
 
+## Inbound firewall
+
+The kill switch only controls traffic leaving the Pi. A second nftables table,
+`inet pinetswitch_in`, controls what may open connections *to* the Pi:
+
+- **Trusted** (anything allowed): loopback, USB-C, the VPN tunnel, Docker,
+  the iPhone USB tether, the Pi's own AP, home uplinks (router MAC / `Loading`),
+  the phone hotspot (`trust_phone_inbound`), and `trusted` from the config.
+- **Untrusted** (foreign Ethernet or Wi-Fi): only replies to the Pi's own
+  connections, DHCP, WireGuard on its fixed port (`vpn_listen_port`, set on the
+  NM profile as `wireguard.listen-port`) and IPv6 neighbour discovery. SSH, VNC
+  and everything else are dropped, and the Pi stops announcing itself over mDNS.
+- Recomputed every tick from the same state as the rules. A clean stop lifts it,
+  a crash leaves it.
+
+System hardening that goes with it (not managed by pinetswitch):
+`/etc/ssh/sshd_config.d/10-keys-only.conf` turns off password and root logins
+(cloud-init had enabled passwords), and Cockpit (`cockpit.socket`) is disabled.
+
 ## Decisions
 
 - Ethernet is home: gateway MAC check. Ethernet not home: Wi-Fi search, full power, VPN enforced.
@@ -194,13 +213,14 @@ survives), and restores Wi-Fi, power and the service afterwards. It covers:
 the home-only search window, joining the phone profile (played by `Loading`),
 VPN up, kill switch on, tunnel works and bypass is blocked, LAN still
 reachable, low power, the AP after the search window, `rpi.local` / `rpi`
-answered by the AP's DNS, the AP rescan cycle, and the kill switch lifted on a
+answered by the AP's DNS, the AP rescan cycle, the inbound firewall closing an
+untrusted Wi-Fi but trusting the AP, and both firewalls lifted on a
 clean stop. Not covered: a real foreign network, iPhone USB tethering, skipping
 the rescan while AP clients are connected, IPv6 (checked only when the uplink
 has an IPv6 default route).
 
 Runtime files: `/run/pinetswitch/status.json`, `/run/pinetswitch/power-override`.
-A clean stop (`systemctl stop`) lifts the kill switch; a crash leaves it in place.
+A clean stop (`systemctl stop`) lifts the kill switch and the inbound firewall; a crash leaves them in place.
 
 ## Install
 
