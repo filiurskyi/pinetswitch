@@ -141,21 +141,29 @@ cannot be told apart reliably, so the policy keys on the link, not the supply.
 
 - iPhone hotspot internet for all travel devices: to be researched.
 
-## Power mode tray widget
+## Tray widget
 
-Feasible: the panel (`wf-panel-pi`) has a system tray plugin (`libtray.so`,
-StatusNotifierItem), so a small Python app using
-`gir1.2-ayatanaappindicator3-0.1` can show an icon with a menu: *Auto
-(policy) / Full / Low*. A manual choice overrides the policy until set back to
-Auto.
+`pinetswitch-tray` puts an icon in the panel tray (`wf-panel-pi` hosts
+StatusNotifierItems; the app uses `gir1.2-ayatanaappindicator3-0.1`):
+
+- icon: power profile (performance / power saver / balanced when neither
+  matches), warning icon when pinetswitch is not running
+- menu: where the Pi is (`Home · Ethernet`, `On the go`, ...), a detail line
+  (`Wi-Fi: … · VPN on · kill switch · power low`), and *Power: Auto / Full /
+  Low*, which writes `/run/pinetswitch/power-override`
+
+Starts with the desktop session via `~/.config/autostart/pinetswitch-tray.desktop`.
 
 ## Layout
 
 ```
-pinetswitch.py        # snapshot -> Policy.plan (ordered rules) -> reconcile -> nmcli / nft / cpufreq
-test_pinetswitch.py   # policy tests on fake states: python3 -m unittest test_pinetswitch
-pinetswitch.toml      # config, installed as /etc/pinetswitch.toml
-pinetswitch.service   # systemd unit (ExecStart has --dry-run until switched live)
+pinetswitch.py            # snapshot -> Policy.plan (ordered rules) -> reconcile -> nmcli / nft / cpufreq
+pinetswitch_tray.py       # tray icon and power menu, installed as /usr/local/bin/pinetswitch-tray
+pinetswitch-tray.desktop  # autostart entry for the tray
+test_pinetswitch.py       # unit tests: policy on fake states, config file, tray labels
+livetest.py               # live test on the Pi: Wi-Fi search, phone join, VPN, kill switch, AP, power
+pinetswitch.toml          # config, installed as /etc/pinetswitch.toml
+pinetswitch.service       # systemd unit (ExecStart has --dry-run until switched live)
 ```
 
 Adding a rule: a `Policy` method `(State, now) -> Plan | None`, inserted into
@@ -167,7 +175,26 @@ Adding a rule: a `Policy` method `(State, now) -> Plan | None`, inserted into
 pinetswitch status                 # what the daemon sees and wants (JSON)
 pinetswitch power low|full|auto    # power override, no sudo (group netdev)
 journalctl -u pinetswitch -f       # decisions and actions
+pinetswitch run --config X.toml    # run with another config (used by livetest.py)
 ```
+
+## Tests
+
+```sh
+python3 -m unittest test_pinetswitch   # anywhere, no hardware: policy, config, tray labels
+sudo python3 -I livetest.py            # on the Pi, from a session over USB-C or Ethernet
+```
+
+`livetest.py` stops the service, runs pinetswitch for real with test configs
+that point USB-C and Ethernet at fake interface names (so the management link
+survives), and restores Wi-Fi, power and the service afterwards. It covers:
+the home-only search window, joining the phone profile (played by `Loading`),
+VPN up, kill switch on, tunnel works and bypass is blocked, LAN still
+reachable, low power, the AP after the search window, `rpi.local` / `rpi`
+answered by the AP's DNS, the AP rescan cycle, and the kill switch lifted on a
+clean stop. Not covered: a real foreign network, iPhone USB tethering, skipping
+the rescan while AP clients are connected, IPv6 (checked only when the uplink
+has an IPv6 default route).
 
 Runtime files: `/run/pinetswitch/status.json`, `/run/pinetswitch/power-override`.
 A clean stop (`systemctl stop`) lifts the kill switch; a crash leaves it in place.
@@ -180,13 +207,17 @@ sudo install -m 755 pinetswitch.py /usr/local/bin/pinetswitch
 sudo install -m 644 pinetswitch.toml /etc/pinetswitch.toml
 sudo install -m 644 pinetswitch.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now pinetswitch
+sudo install -m 755 pinetswitch_tray.py /usr/local/bin/pinetswitch-tray
+install -D -m 644 pinetswitch-tray.desktop ~/.config/autostart/pinetswitch-tray.desktop
 ```
 
 Prerequisites (done once): Wi-Fi profiles `Loading` and `iPhone 12 Pro Max`
 with `autoconnect=no`; AP profile `Loading Berry` (mode ap, WPA2 CCMP, shared,
 `10.43.0.1/24`, `autoconnect=no`); WireGuard profile `Home VPN` (interface
 `rpi5`, `autoconnect=no`); cloud-init network config disabled; packages
-`usbmuxd wireguard-tools iw nftables`. USB-C gadget: `/etc/udev/rules.d/86-usb-gadget-managed.rules`
+`usbmuxd wireguard-tools iw nftables gir1.2-ayatanaappindicator3-0.1 bind9-dnsutils`. `/etc/NetworkManager/dnsmasq-shared.d/rpi-local.conf` makes the DNS of the
+Pi's own networks (USB-C, AP) answer `rpi.local` / `rpi`, for Android clients
+that cannot do mDNS. USB-C gadget: `/etc/udev/rules.d/86-usb-gadget-managed.rules`
 (`ENV{DEVTYPE}=="gadget", ENV{NM_UNMANAGED}="0"`, NetworkManager ignores gadgets
 by default) and `/etc/modprobe.d/g_ether.conf` with fixed `dev_addr` /
 `host_addr` so the host sees the same device every boot.
