@@ -8,6 +8,7 @@ kill switch included), and System.execute() runs them. Only System touches the
 machine, so the policy is unit-testable with fake states (test_pinetswitch.py).
 """
 import argparse
+import fnmatch
 import grp
 import json
 import logging
@@ -35,7 +36,7 @@ NFT_TABLE = "pinetswitch"
 
 @dataclass
 class Config:
-    eth: str = "eth0"
+    wired: list = field(default_factory=lambda: ["*"])  # glob patterns over NM ethernet devices
     usb: str = "usb0"
     wifi: str = "wlan0"
     tether_driver: str = "ipheth"
@@ -75,8 +76,8 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
 @dataclass
 class State:
     usb_up: bool = False
-    eth_up: bool = False
-    eth_home: bool = False
+    wired_up: bool = False  # any wired uplink (eth0, a dock or USB NIC) connected
+    wired_home: bool = False  # ... and every connected one is behind the home router
     tether_up: bool = False
     wifi_radio: bool = True
     wifi_mode: str = "off"  # off | connecting | client | ap
@@ -161,7 +162,7 @@ class Policy:
             return Plan("tether-ap", AP, "low")
 
     def home_wired(self, s, now):
-        if s.eth_up and s.eth_home:
+        if s.wired_up and s.wired_home:
             return Plan("home-wired", OFF, "full")
 
     def home_wifi(self, s, now):
@@ -169,7 +170,7 @@ class Policy:
             return Plan("home-wifi", LEAVE, "full")
 
     def foreign_wired(self, s, now):
-        if s.eth_up:
+        if s.wired_up:
             sub, wifi, _ = self.search(s, now)
             return Plan("foreign-wired/" + sub, wifi, "full")
 
@@ -230,8 +231,8 @@ class Policy:
 def is_home(s: State, cfg: Config) -> bool:
     """True only when there is an uplink and every uplink is home."""
     uplinks = []
-    if s.eth_up:
-        uplinks.append(s.eth_home)
+    if s.wired_up:
+        uplinks.append(s.wired_home)
     if s.wifi_mode == "client":
         uplinks.append(s.wifi_profile == cfg.home_profile)
     if s.tether_up:
@@ -240,7 +241,7 @@ def is_home(s: State, cfg: Config) -> bool:
 
 
 def has_foreign_uplink(s: State, cfg: Config) -> bool:
-    return ((s.eth_up and not s.eth_home)
+    return ((s.wired_up and not s.wired_home)
             or (s.wifi_mode == "client" and s.wifi_profile != cfg.home_profile)
             or s.tether_up)
 
@@ -359,7 +360,7 @@ def read_override() -> str:
 class System:
     def __init__(self, cfg: Config, dry_run: bool):
         self.cfg, self.dry_run = cfg, dry_run
-        self.gw_mac: dict[str, str] = {}  # eth gateway IP -> MAC, cached while eth is up
+        self.gw_mac: dict[tuple[str, str], str] = {}  # (wired dev, gateway IP) -> MAC, cached while up
         self.last_rescan = 0.0
 
     def ssids(self) -> dict[str, str]:
@@ -382,12 +383,14 @@ class System:
 
         s = State()
         s.usb_up = connected(cfg.usb) and carrier(cfg.usb)
-        s.eth_up = connected(cfg.eth)
-        if s.eth_up:
-            s.eth_home = self.eth_is_home()
-        else:
-            self.gw_mac.clear()
-        s.tether_up = any(connected(d) for d in devs if driver(d) == cfg.tether_driver)
+        tethers = {d for d in devs if driver(d) == cfg.tether_driver}
+        s.tether_up = any(connected(d) for d in tethers)
+        wired = [d for d, (typ, _, _) in devs.items()
+                 if typ == "ethernet" and d != cfg.usb and d not in tethers and connected(d)
+                 and any(fnmatch.fnmatch(d, pat) for pat in cfg.wired)]
+        s.wired_up = bool(wired)
+        s.wired_home = s.wired_up and all(self.wired_is_home(d) for d in wired)
+        self.gw_mac = {k: v for k, v in self.gw_mac.items() if k[0] in wired}
         s.wifi_radio = nmcli("radio", "wifi").strip() == "enabled"
         if cfg.wifi in devs:
             _, st, con = devs[cfg.wifi]
@@ -406,27 +409,27 @@ class System:
         s.override = read_override()
         return s
 
-    def eth_is_home(self) -> bool:
-        """Home = the default gateway on eth has the home router's MAC."""
+    def wired_is_home(self, dev: str) -> bool:
+        """Home = the default gateway on dev has the home router's MAC."""
         cfg = self.cfg
         if not cfg.home_router_mac:
             return False
-        routes = json.loads(run("ip", "-j", "route", "show", "default", "dev", cfg.eth).stdout or "[]")
+        routes = json.loads(run("ip", "-j", "route", "show", "default", "dev", dev).stdout or "[]")
         gw = next((r["gateway"] for r in routes if "gateway" in r), None)
         if not gw:
             return False
-        if gw not in self.gw_mac:
+        if (dev, gw) not in self.gw_mac:
             mac = None
             for attempt in range(2):
-                neigh = json.loads(run("ip", "-j", "neigh", "show", gw, "dev", cfg.eth).stdout or "[]")
+                neigh = json.loads(run("ip", "-j", "neigh", "show", gw, "dev", dev).stdout or "[]")
                 mac = next((n["lladdr"] for n in neigh if "lladdr" in n), None)
                 if mac or attempt:
                     break
-                run("ping", "-c1", "-W1", "-I", cfg.eth, gw)  # fill the ARP cache
+                run("ping", "-c1", "-W1", "-I", dev, gw)  # fill the ARP cache
             if not mac:
                 return False
-            self.gw_mac[gw] = mac.lower()
-        return self.gw_mac[gw] == cfg.home_router_mac
+            self.gw_mac[(dev, gw)] = mac.lower()
+        return self.gw_mac[(dev, gw)] == cfg.home_router_mac
 
     def read_power(self) -> str | None:
         p0 = CPUFREQ / "policy0"

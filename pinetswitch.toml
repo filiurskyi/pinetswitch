@@ -1,7 +1,8 @@
 # /etc/pinetswitch.toml: every key is optional, defaults are in Config (pinetswitch.py)
 
 home_profile = "Loading"
-home_router_mac = "94:83:c4:e3:d1:4a"   # gateway MAC on eth0 = we are home
+home_router_mac = "94:83:c4:e3:d1:4a"   # gateway MAC on a wired uplink = we are home
+# wired = ["*"]          # wired uplinks: NM ethernet devices matching these globs (not usb0 or the iPhone tether)
 phone_profile = "iPhone 12 Pro Max"
 ap_profile = "Loading Berry"
 

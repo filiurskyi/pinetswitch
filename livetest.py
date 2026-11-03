@@ -4,7 +4,7 @@
     sudo python3 -I livetest.py
 
 Runs the installed pinetswitch for real (no dry run) with test configs that
-point USB-C and Ethernet at fake interface names, so a management session over
+point USB-C at a fake interface name and match no wired NIC, so a management session over
 either keeps working while Wi-Fi, VPN, kill switch and power are driven.
 The main service is stopped meanwhile; Wi-Fi, power and the service are
 restored at the end.
@@ -28,7 +28,7 @@ from pathlib import Path
 BIN = "/usr/local/bin/pinetswitch"
 STATUS = Path("/run/pinetswitch/status.json")
 POLICY0 = Path("/sys/devices/system/cpu/cpufreq/policy0")
-BASE = {"usb": "none-usb0", "eth": "none-eth0", "interval": 1}
+BASE = {"usb": "none-usb0", "wired": [], "interval": 1}
 results: list[tuple[bool, str]] = []
 
 

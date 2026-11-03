@@ -47,7 +47,7 @@ home, the WireGuard tunnel is up and enforced (see below).
    (any) ------------------------------------------------> USB_HOST     wlan untouched, low power
                      iPhone USB tether up
    (any) ------------------------------------------------> TETHER_AP    AP shares tether, low power
-                     eth0 up + home
+                     wired uplink up + home
    (any) ------------------------------------------------> HOME_WIRED   radio off, full power
 
    none of the above:
@@ -82,8 +82,8 @@ cannot be told apart reliably, so the policy keys on the link, not the supply.
 | Signal | Source |
 |---|---|
 | USB-C host attached | `usb0` carrier / NM device state |
-| Ethernet link up | `eth0` carrier / NM device state |
-| Ethernet is home | TBD (home router MAC via ARP?) |
+| Wired uplink up | any connected NM ethernet device matching `wired` globs (default `*`), except `usb0` and the iPhone tether, e.g. `eth0` or a dock/USB NIC |
+| Wired uplink is home | every connected wired uplink's default gateway has the home router MAC |
 | iPhone tether up | `ipheth` interface present and connected (needs `usbmuxd`) |
 | Wi-Fi radio on/off | `nmcli radio wifi` |
 | Wi-Fi mode: off / client / AP | active NM connection on `wlan0` |
@@ -107,8 +107,8 @@ cannot be told apart reliably, so the policy keys on the link, not the supply.
 
 ## Home detection
 
-- **Ethernet**: the default gateway's MAC on `eth0` matches the home router MAC
-  from config (works with Wi-Fi off).
+- **Wired** (`eth0`, a dock or USB NIC): the default gateway's MAC on each wired
+  uplink matches the home router MAC from config (works with Wi-Fi off).
 - **Wi-Fi**: connected to the `Loading` profile (WPA2-PSK, so a look-alike SSID
   without the password cannot pass).
 

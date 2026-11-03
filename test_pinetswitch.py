@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Policy and tray tests on fake states: python3 -m unittest -v test_pinetswitch"""
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from dataclasses import asdict, replace
 from pathlib import Path
 
-from pinetswitch import (AP, DISCONNECT, JOIN, LEAVE, OFF, SCAN, Config, Policy, State,
+from pinetswitch import (AP, DISCONNECT, JOIN, LEAVE, OFF, SCAN, Config, Policy, State, System,
                          killswitch_ruleset, load_config, reconcile, split_terse)
 from pinetswitch_tray import ICONS, current_mode, describe, kanshi_config
 
@@ -28,13 +30,13 @@ class Base(unittest.TestCase):
 
 class Home(Base):
     def test_home_ethernet_turns_wifi_off_full_power_no_vpn(self):
-        s = State(eth_up=True, eth_home=True, wifi_mode="client", wifi_profile=HOME, power="low")
+        s = State(wired_up=True, wired_home=True, wifi_mode="client", wifi_profile=HOME, power="low")
         p, a = self.step(s, 0)
         self.assertEqual((p.situation, p.wifi), ("home-wired", OFF))
         self.assertEqual(a, {("wifi", "radio off", None), ("power", "full", None)})
 
     def test_home_ethernet_settled_does_nothing(self):
-        s = State(eth_up=True, eth_home=True, wifi_radio=False, power="full")
+        s = State(wired_up=True, wired_home=True, wifi_radio=False, power="full")
         self.assertEqual(self.step(s, 0)[1], set())
 
     def test_cable_pulled_radio_on_then_joins_home_asap(self):
@@ -56,13 +58,13 @@ class Home(Base):
                              ("vpn", "down", "Home VPN")})
 
     def test_home_wifi_then_cable_goes_wired(self):
-        s = State(eth_up=True, eth_home=True, wifi_mode="client", wifi_profile=HOME, power="full")
+        s = State(wired_up=True, wired_home=True, wifi_mode="client", wifi_profile=HOME, power="full")
         p, a = self.step(s, 0)
         self.assertEqual(p.situation, "home-wired")
         self.assertEqual(a, {("wifi", "radio off", None)})
 
     def test_power_override_wins(self):
-        s = State(eth_up=True, eth_home=True, wifi_radio=False, power="full", override="low")
+        s = State(wired_up=True, wired_home=True, wifi_radio=False, power="full", override="low")
         self.assertEqual(self.step(s, 0)[1], {("power", "low", None)})
 
 
@@ -139,7 +141,7 @@ class AccessPoint(Base):
 
 class Links(Base):
     def test_usb_host_low_power_wifi_untouched_radio_on(self):
-        s = State(usb_up=True, eth_up=True, eth_home=True, wifi_radio=False, power="full")
+        s = State(usb_up=True, wired_up=True, wired_home=True, wifi_radio=False, power="full")
         p, a = self.step(s, 0)
         self.assertEqual((p.situation, p.wifi), ("usb-host", LEAVE))
         self.assertEqual(a, {("wifi", "radio on", None), ("power", "low", None)})
@@ -156,7 +158,7 @@ class Links(Base):
                              ("vpn", "up", "Home VPN"), ("killswitch", "on", None)})
 
     def test_foreign_ethernet_full_power_vpn_wifi_searches(self):
-        s = State(eth_up=True, eth_home=False, power="full")
+        s = State(wired_up=True, wired_home=False, power="full")
         p, a = self.step(s, 0)
         self.assertEqual((p.situation, p.wifi, p.power), ("foreign-wired/search 0s", SCAN, "full"))
         self.assertEqual(a, {("wifi", "rescan", None), ("vpn", "up", "Home VPN"),
@@ -165,14 +167,14 @@ class Links(Base):
         self.assertEqual(self.step(s, 15)[0].power, "full")
 
     def test_vpn_retry_backoff(self):
-        s = State(eth_up=True, power="full", killswitch=True, visible=frozenset())
+        s = State(wired_up=True, power="full", killswitch=True, visible=frozenset())
         self.pol.mark_failed("Home VPN", 0)
         self.assertNotIn(("vpn", "up", "Home VPN"), self.step(s, 29)[1])
         self.assertIn(("vpn", "up", "Home VPN"), self.step(s, 30)[1])
 
     def test_not_enforced_means_no_killswitch(self):
         self.pol.cfg.vpn_enforce = False
-        s = State(eth_up=True, power="full")
+        s = State(wired_up=True, power="full")
         self.assertNotIn(("killswitch", "on", None), self.step(s, 0)[1])
 
 
@@ -185,6 +187,42 @@ class Helpers(unittest.TestCase):
         r = killswitch_ruleset(Config())
         self.assertIn('"rpi5"', r)
         self.assertIn("64894", r)
+
+
+class WiredSnapshot(unittest.TestCase):
+    """System.snapshot() picks wired uplinks: any NM ethernet device but usb0 and the tether."""
+    DEVICES = "\n".join([
+        "eth0:ethernet:connected:Wired connection 1",
+        "enx00e04c680001:ethernet:connected:Dock",  # dock / USB NIC with USB-C in host mode
+        "usb0:ethernet:connected:usb-c",  # USB-C gadget link to the laptop
+        "eth1:ethernet:connected:iPhone",  # iPhone USB tether
+        "docker0:bridge:connected (externally):docker0",
+        "wlan0:wifi:disconnected:",
+    ])
+    HOME_DEVS = {"eth0"}
+
+    def snap(self, **cfg):
+        def fake_nmcli(*args):
+            return self.DEVICES if args[-1] == "device" and "DEVICE,TYPE,STATE,CONNECTION" in args else ""
+        sysm = System(Config(**cfg), dry_run=True)
+        with mock.patch("pinetswitch.nmcli", fake_nmcli), \
+             mock.patch("pinetswitch.run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "")), \
+             mock.patch("pinetswitch.carrier", lambda d: True), \
+             mock.patch("pinetswitch.driver", lambda d: "ipheth" if d == "eth1" else "x"), \
+             mock.patch.object(System, "wired_is_home", lambda self, d: d in WiredSnapshot.HOME_DEVS):
+            return sysm.snapshot()
+
+    def test_foreign_dock_nic_makes_wired_foreign(self):
+        s = self.snap()
+        self.assertEqual((s.wired_up, s.wired_home, s.usb_up, s.tether_up), (True, False, True, True))
+
+    def test_glob_limits_wired_to_matching_devices(self):
+        s = self.snap(wired=["eth*"])  # dock excluded, eth1 is the tether, so only eth0
+        self.assertEqual((s.wired_up, s.wired_home), (True, True))
+
+    def test_no_wired_devices(self):
+        s = self.snap(wired=[])
+        self.assertEqual((s.wired_up, s.wired_home), (False, False))
 
 
 class ConfigFile(unittest.TestCase):
