@@ -56,7 +56,10 @@ class Config:
         "full": {"max_freq": 2400000, "governor": "ondemand"},
         "low": {"max_freq": 1500000, "governor": "ondemand"},
     })
+    usb_subnet: str = "10.42.0.0/24"  # NetworkManager shared network on USB-C
+    ap_subnet: str = "10.43.0.0/24"
     retry_secs: float = 30
+    housekeeping_secs: float = 30
     interval: float = 2
 
 
@@ -482,6 +485,47 @@ class System:
             return False
         return True
 
+    # housekeeping: invariants that NetworkManager or Docker can undo, checked periodically
+
+    def housekeeping(self) -> None:
+        verb = "would" if self.dry_run else "do"
+        listing = nmcli("-t", "-f", "UUID,TYPE,AUTOCONNECT,NAME", "connection")
+        for uuid, name in wifi_autoconnect_on(listing):
+            log.info("%s autoconnect off for Wi-Fi profile %r", verb, name)
+            if not self.dry_run:
+                run("nmcli", "connection", "modify", uuid, "connection.autoconnect", "no")
+        if run("iptables", "-n", "-L", "DOCKER-USER").returncode != 0:
+            return  # no Docker chain: nothing drops forwarded traffic
+        for rule in forward_rules(self.cfg):
+            if run("iptables", "-C", "DOCKER-USER", *rule).returncode != 0:
+                log.info("%s allow forwarding %s", verb, " ".join(rule))
+                if not self.dry_run:
+                    run("iptables", "-I", "DOCKER-USER", *rule)
+
+
+def wifi_autoconnect_on(listing: str) -> list[tuple[str, str]]:
+    """(uuid, name) of Wi-Fi profiles with autoconnect on, from `nmcli -t -f UUID,TYPE,AUTOCONNECT,NAME c`."""
+    found = []
+    for line in listing.splitlines():
+        f = split_terse(line)
+        if len(f) == 4 and f[1] == "802-11-wireless" and f[2] == "yes":
+            found.append((f[0], f[3]))
+    return found
+
+
+def forward_rules(cfg: Config) -> list[list[str]]:
+    """DOCKER-USER rules that let clients of the Pi's own networks be routed.
+
+    Docker sets the FORWARD policy to DROP, which would cut USB-C and AP clients
+    off from the uplink. Only their own subnets are let through, so hosts on a
+    foreign uplink still cannot route through the Pi.
+    """
+    rules = []
+    for iface, net in ((cfg.usb, cfg.usb_subnet), (cfg.wifi, cfg.ap_subnet)):
+        rules.append(["-i", iface, "-s", net, "-j", "ACCEPT"])
+        rules.append(["-o", iface, "-d", net, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"])
+    return rules
+
 
 # --- daemon --------------------------------------------------------------------
 
@@ -535,9 +579,12 @@ def daemon(cfg: Config, dry_run: bool) -> None:
     signal.signal(signal.SIGINT, on_term)
 
     log.info("started%s", " (dry run)" if dry_run else "")
-    last_situation, last_shown = None, None
+    last_situation, last_shown, last_housekeeping = None, None, None
     while not stop.is_set():
         now = time.monotonic()
+        if last_housekeeping is None or now - last_housekeeping >= cfg.housekeeping_secs:
+            sysm.housekeeping()
+            last_housekeeping = now
         s = sysm.snapshot()
         p = policy.plan(s, now)
         acts = reconcile(s, p, cfg, policy, now)

@@ -16,6 +16,9 @@ vpn_iface = "rpi5"
 vpn_endpoint_port = 64894
 vpn_enforce = true        # kill switch: no internet outside the tunnel unless home
 
+usb_subnet = "10.42.0.0/24"   # own networks whose clients may be routed (Docker drops forwarding)
+ap_subnet = "10.43.0.0/24"
+
 [power.full]
 max_freq = 2400000
 governor = "ondemand"
